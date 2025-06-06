@@ -1,0 +1,2 @@
+// This directive is still important for the system to know about the file.
+// We are just temporarily using the direct URL in the <img> tag for debugging.

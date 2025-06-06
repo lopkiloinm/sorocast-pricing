@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 45 93% 47%; /* Sorocast Yellow */
+    --primary-foreground: 0 0% 9%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 3.7% 65.9%; /* Zinc 400 */
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 72% 51%; /* Red */
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 45 93% 47%; /* Sorocast Yellow for focus rings */
+    --radius: 0.5rem;
+
+    /* Custom Sorocast colors as HSL values */
+    --sorocast-yellow-hsl: 45 93% 47%;
+    --sorocast-green-hsl: 145 83% 39%;
+    --sorocast-red-hsl: 0 72% 51%;
+    --sorocast-blue-hsl: 217 91% 60%;
+    --sorocast-purple-hsl: 262 84% 60%;
+  }
+
+  .dark {
+    --background: 0 0% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 45 93% 47%;
+    --primary-foreground: 0 0% 9%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 3.7% 65.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 45 93% 47%;
+  }
+}
+
+@layer base {
+  html {
+    -ms-overflow-style: none; /* IE and Edge */
+    scrollbar-width: none; /* Firefox */
+    overflow-x: hidden !important; /* Prevent horizontal scroll on html, !important for emphasis */
+    overflow-y: auto; /* Allow vertical scroll if content demands, but scrollbar hidden */
+  }
+  html::-webkit-scrollbar {
+    display: none !important; /* Safari and Chrome, !important for emphasis */
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    overflow-x: hidden !important; /* Prevent horizontal scrollbars on body, !important for emphasis */
+    overflow-y: auto; /* Allow vertical scroll if content demands, but scrollbar hidden */
+    -ms-overflow-style: none; /* IE and Edge for body */
+    scrollbar-width: none; /* Firefox for body */
+  }
+  body::-webkit-scrollbar {
+    display: none !important; /* Safari and Chrome for body, !important for emphasis */
+  }
+
+  /* CRITICAL: Ensure this rule is GONE or COMMENTED OUT */
+  /* 
+  * {
+    @apply border-border;
+  }
+  */
+}
+
+/* Utility to hide scrollbars (for specific internal elements) */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
