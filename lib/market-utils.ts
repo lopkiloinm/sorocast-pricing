@@ -22,13 +22,32 @@ export interface MarketMetadata {
   category: string
   endDate: number
   resolutionSource: string
-  options: string[]
+  options: string[] // For a binary market, this will be ["Yes", "No"]
 }
 
 export interface SeederInfo {
   seedAmountStroops: number // seeder's liquidity, in stroops (1 XLM = 10_000_000 stroops)
   liquidityParamB: number // seeder's b parameter for LMSR
   prior: number[] // prior probabilities (fixed-point, sum to SCALE)
+}
+
+// Represents the state of a single, independent binary market
+export interface BinaryMarketState {
+  metadata: MarketMetadata
+  seeders: MarketMap<string, SeederInfo>
+  qSeeders: MarketMap<string, number[]>
+  qReal: MarketMap<number, number>
+  shares: MarketMap<[string, number], number>
+}
+
+// A container for multiple independent binary markets, presented as a single "range" market
+export interface MarketContainer {
+  id: string
+  title: string
+  description: string
+  category: string
+  // A map where the key is the inequality (e.g., "< $70") and the value is its market state
+  subMarkets: Map<string, BinaryMarketState>
 }
 
 // Map implementation for TypeScript
@@ -204,23 +223,17 @@ export function recomputeQ(
   return qReal
 }
 
-// Simulate buying shares
+// Simulate buying shares in a specific binary market
 // @param buyer - The buyer's address
-// @param outcome - The outcome index
+// @param outcome - The outcome index (0 for Yes, 1 for No)
 // @param sharesCount - Number of shares to buy (NOT in stroops - actual share count)
-// @param market - The market object
+// @param marketState - The state of the specific binary market to trade in
 // @returns cost in STROOPS (pure LMSR cost), fee in STROOPS (separate), and new prices (as probabilities 0-1)
 export function simulateBuy(
   buyer: string,
   outcome: number,
   sharesCount: number,
-  market: {
-    metadata: MarketMetadata
-    seeders: MarketMap<string, SeederInfo>
-    qSeeders: MarketMap<string, number[]>
-    qReal: MarketMap<number, number>
-    shares: MarketMap<[string, number], number>
-  },
+  marketState: BinaryMarketState,
 ): { cost: number; fee: number; newPrices: number[] } {
   if (sharesCount < MIN_SHARES) {
     throw new Error("Shares count must be at least " + MIN_SHARES)
@@ -228,15 +241,15 @@ export function simulateBuy(
 
   // Convert sharesCount to stroops (1 share = 10^7 stroops)
   const sharesInStroops = sharesCount * SCALE
-  const [totalB, optionsLen] = getDynamicBAndN(market.seeders)
+  const [totalB, optionsLen] = getDynamicBAndN(marketState.seeders)
 
   // Cost before (pure LMSR cost)
-  const costBefore = marketCost(market.qSeeders, market.seeders)
+  const costBefore = marketCost(marketState.qSeeders, marketState.seeders)
 
   // Create a copy of qSeeders for simulation
   const qSeedersAfter = new MarketMap<string, number[]>()
-  market.seeders.iter().forEach(([addr, info]) => {
-    const qj = market.qSeeders.get(addr) || Array(optionsLen).fill(0)
+  marketState.seeders.iter().forEach(([addr, info]) => {
+    const qj = marketState.qSeeders.get(addr) || Array(optionsLen).fill(0)
     qSeedersAfter.set(addr, [...qj])
   })
 
@@ -245,7 +258,7 @@ export function simulateBuy(
   deltaQ[outcome] = sharesInStroops
 
   // Update each seeder's q-vector proportionally
-  market.seeders.iter().forEach(([addr, info]) => {
+  marketState.seeders.iter().forEach(([addr, info]) => {
     const qj = qSeedersAfter.get(addr) || Array(optionsLen).fill(0)
     const b_j = info.liquidityParamB
 
@@ -258,7 +271,7 @@ export function simulateBuy(
   })
 
   // Calculate cost after (pure LMSR cost)
-  const costAfter = marketCost(qSeedersAfter, market.seeders)
+  const costAfter = marketCost(qSeedersAfter, marketState.seeders)
 
   // Calculate pure LMSR cost in stroops (no fees included)
   const costDiff = costAfter - costBefore
@@ -270,52 +283,46 @@ export function simulateBuy(
   // Compute new prices
   const newPrices: number[] = []
   for (let i = 0; i < optionsLen; i++) {
-    const p = marketPrice(qSeedersAfter, market.seeders, i)
+    const p = marketPrice(qSeedersAfter, marketState.seeders, i)
     newPrices.push(p)
   }
 
   return { cost: pureCost, fee: fee, newPrices }
 }
 
-// Simulate selling shares
+// Simulate selling shares in a specific binary market
 // @param seller - The seller's address
-// @param outcome - The outcome index
+// @param outcome - The outcome index (0 for Yes, 1 for No)
 // @param sharesCount - Number of shares to sell (NOT in stroops - actual share count)
-// @param market - The market object
+// @param marketState - The state of the specific binary market to trade in
 // @returns refund in STROOPS (pure LMSR refund, no fees deducted) and new prices (as probabilities 0-1)
 export function simulateSell(
   seller: string,
   outcome: number,
   sharesCount: number,
-  market: {
-    metadata: MarketMetadata
-    seeders: MarketMap<string, SeederInfo>
-    qSeeders: MarketMap<string, number[]>
-    qReal: MarketMap<number, number>
-    shares: MarketMap<[string, number], number>
-  },
+  marketState: BinaryMarketState,
 ): { refund: number; newPrices: number[] } {
   if (sharesCount < MIN_SHARES) {
     throw new Error("Shares count must be at least " + MIN_SHARES)
   }
 
   // Check if seller has enough shares
-  const prevShares = market.shares.get([seller, outcome]) || 0
+  const prevShares = marketState.shares.get([seller, outcome]) || 0
   if (prevShares < sharesCount) {
     throw new Error("Not enough shares")
   }
 
   // Convert sharesCount to stroops (1 share = 10^7 stroops)
   const sharesInStroops = sharesCount * SCALE
-  const [totalB, optionsLen] = getDynamicBAndN(market.seeders)
+  const [totalB, optionsLen] = getDynamicBAndN(marketState.seeders)
 
   // Cost before (pure LMSR cost)
-  const costBefore = marketCost(market.qSeeders, market.seeders)
+  const costBefore = marketCost(marketState.qSeeders, marketState.seeders)
 
   // Create a copy of qSeeders for simulation
   const qSeedersAfter = new MarketMap<string, number[]>()
-  market.seeders.iter().forEach(([addr, info]) => {
-    const qj = market.qSeeders.get(addr) || Array(optionsLen).fill(0)
+  marketState.seeders.iter().forEach(([addr, info]) => {
+    const qj = marketState.qSeeders.get(addr) || Array(optionsLen).fill(0)
     qSeedersAfter.set(addr, [...qj])
   })
 
@@ -324,7 +331,7 @@ export function simulateSell(
   deltaQ[outcome] = -sharesInStroops
 
   // Update each seeder's q-vector proportionally
-  market.seeders.iter().forEach(([addr, info]) => {
+  marketState.seeders.iter().forEach(([addr, info]) => {
     const qj = qSeedersAfter.get(addr) || Array(optionsLen).fill(0)
     const b_j = info.liquidityParamB
 
@@ -337,7 +344,7 @@ export function simulateSell(
   })
 
   // Calculate cost after (pure LMSR cost)
-  const costAfter = marketCost(qSeedersAfter, market.seeders)
+  const costAfter = marketCost(qSeedersAfter, marketState.seeders)
 
   // Calculate pure LMSR refund in stroops (no fees deducted)
   const costDiff = costBefore - costAfter
@@ -346,7 +353,7 @@ export function simulateSell(
   // Compute new prices
   const newPrices: number[] = []
   for (let i = 0; i < optionsLen; i++) {
-    const p = marketPrice(qSeedersAfter, market.seeders, i)
+    const p = marketPrice(qSeedersAfter, marketState.seeders, i)
     newPrices.push(p)
   }
 
@@ -386,18 +393,12 @@ export function distributeFee(fee: number, seeders: MarketMap<string, SeederInfo
   return feeDistribution
 }
 
-// Initialize a market with uniform priors
-export function initializeMarket(
+// Initialize a single binary market
+export function initializeBinaryMarket(
   metadata: MarketMetadata,
   initialSeeders: { address: string; amount: number }[],
-): {
-  metadata: MarketMetadata
-  seeders: MarketMap<string, SeederInfo>
-  qSeeders: MarketMap<string, number[]>
-  qReal: MarketMap<number, number>
-  shares: MarketMap<[string, number], number>
-} {
-  const n = metadata.options.length
+): BinaryMarketState {
+  const n = metadata.options.length // Should be 2 for binary
   const seeders = new MarketMap<string, SeederInfo>()
   const qSeeders = new MarketMap<string, number[]>()
   const qReal = new MarketMap<number, number>()
@@ -452,25 +453,15 @@ export function calculatePriorsFromPrices(prices: number[]): number[] {
   return priors
 }
 
-// Add a new seeder to an existing market
-// @param market - The market object
+// Add a new seeder to an existing binary market
+// @param marketState - The state of the specific binary market
 // @param seederAddress - The seeder's address
 // @param seedAmount - Seed amount in STROOPS (multiply XLM by 10^7)
-export function addSeeder(
-  market: {
-    metadata: MarketMetadata
-    seeders: MarketMap<string, SeederInfo>
-    qSeeders: MarketMap<string, number[]>
-    qReal: MarketMap<number, number>
-    shares: MarketMap<[string, number], number>
-  },
-  seederAddress: string,
-  seedAmount: number,
-): void {
+export function addSeeder(marketState: BinaryMarketState, seederAddress: string, seedAmount: number): void {
   // Calculate current market prices
   const prices: number[] = []
-  for (let i = 0; i < market.metadata.options.length; i++) {
-    const price = marketPrice(market.qSeeders, market.seeders, i)
+  for (let i = 0; i < marketState.metadata.options.length; i++) {
+    const price = marketPrice(marketState.qSeeders, marketState.seeders, i)
     prices.push(price)
   }
 
@@ -483,459 +474,147 @@ export function addSeeder(
   const b = Math.floor((seedAmount * SCALE) / fromFixed(-lnPiMin))
 
   // Add the seeder
-  market.seeders.set(seederAddress, {
+  marketState.seeders.set(seederAddress, {
     seedAmountStroops: seedAmount,
     liquidityParamB: b,
     prior: priors,
   })
 
   // Initialize qSeeders with zeros for the new seeder
-  market.qSeeders.set(seederAddress, Array(market.metadata.options.length).fill(0))
+  marketState.qSeeders.set(seederAddress, Array(marketState.metadata.options.length).fill(0))
 }
 
-// Simulate a complete market lifecycle
-// Note: The history events store values in XLM for display purposes
-// - cost is in XLM (already converted from stroops)
-// - seedAmount is in XLM
-// - bValue is in XLM
-export function simulateMarket(
+// Execute a buy operation (not just simulation) on a specific binary market
+export function executeBuy(
+  buyer: string,
+  outcome: number,
+  sharesCount: number,
+  marketState: BinaryMarketState,
+): { cost: number; fee: number; newPrices: number[] } {
+  // First simulate the buy to get cost and new prices
+  const { cost, fee, newPrices } = simulateBuy(buyer, outcome, sharesCount, marketState)
+
+  // Convert sharesCount to stroops (1 share = 10^7 stroops)
+  const sharesInStroops = sharesCount * SCALE
+  const [totalB, optionsLen] = getDynamicBAndN(marketState.seeders)
+
+  // Construct delta_q: only outcome index increases
+  const deltaQ = Array(optionsLen).fill(0)
+  deltaQ[outcome] = sharesInStroops
+
+  // Update each seeder's q-vector proportionally
+  marketState.seeders.iter().forEach(([addr, info]) => {
+    const qj = marketState.qSeeders.get(addr) || Array(optionsLen).fill(0)
+    const b_j = info.liquidityParamB
+
+    for (let i = 0; i < optionsLen; i++) {
+      const dq = Math.floor((b_j * deltaQ[i]) / totalB)
+      qj[i] += dq
+    }
+
+    marketState.qSeeders.set(addr, qj)
+  })
+
+  // Update the buyer's shares
+  const prevShares = marketState.shares.get([buyer, outcome]) || 0
+  marketState.shares.set([buyer, outcome], prevShares + sharesCount)
+
+  // Update qReal
+  marketState.qReal = recomputeQ(marketState.qSeeders, marketState.seeders)
+
+  // Distribute fee to seeders
+  const feeDistribution = distributeFee(fee, marketState.seeders)
+
+  return { cost, fee, newPrices }
+}
+
+// Execute a sell operation (not just simulation) on a specific binary market
+export function executeSell(
+  seller: string,
+  outcome: number,
+  sharesCount: number,
+  marketState: BinaryMarketState,
+): { refund: number; newPrices: number[] } {
+  // Check if seller has enough shares
+  const prevShares = marketState.shares.get([seller, outcome]) || 0
+  if (prevShares < sharesCount) {
+    throw new Error("Not enough shares")
+  }
+
+  // First simulate the sell to get refund and new prices
+  const { refund, newPrices } = simulateSell(seller, outcome, sharesCount, marketState)
+
+  // Convert sharesCount to stroops (1 share = 10^7 stroops)
+  const sharesInStroops = sharesCount * SCALE
+  const [totalB, optionsLen] = getDynamicBAndN(marketState.seeders)
+
+  // Construct delta_q: only outcome index decreases
+  const deltaQ = Array(optionsLen).fill(0)
+  deltaQ[outcome] = -sharesInStroops
+
+  // Update each seeder's q-vector proportionally
+  marketState.seeders.iter().forEach(([addr, info]) => {
+    const qj = marketState.qSeeders.get(addr) || Array(optionsLen).fill(0)
+    const b_j = info.liquidityParamB
+
+    for (let i = 0; i < optionsLen; i++) {
+      const dq = Math.floor((b_j * deltaQ[i]) / totalB)
+      qj[i] += dq
+    }
+
+    marketState.qSeeders.set(addr, qj)
+  })
+
+  // Update the seller's shares
+  marketState.shares.set([seller, outcome], prevShares - sharesCount)
+
+  // Update qReal
+  marketState.qReal = recomputeQ(marketState.qSeeders, marketState.seeders)
+
+  return { refund, newPrices }
+}
+
+// Creates a container with multiple, independent binary markets
+// This replaces the old `createRangeMarketSimulation`
+export function createMultiBinaryMarketContainer(
+  id: string,
   title: string,
-  options: string[],
-  trades: Array<{
-    trader: string
-    outcome: number
-    shares: number
-    afterTrade?: () => void
-  }>,
-): {
-  metadata: MarketMetadata
-  seeders: MarketMap<string, SeederInfo>
-  qSeeders: MarketMap<string, number[]>
-  qReal: MarketMap<number, number>
-  shares: MarketMap<[string, number], number>
-  history: Array<{
-    type: "trade" | "seed"
-    actor: string
-    outcome?: number
-    shares?: number
-    cost?: number
-    seedAmount?: number
-    bValue?: number
-    prices: number[]
-    timestamp: number
-  }>
-} {
-  // Create metadata
-  const metadata: MarketMetadata = {
+  description: string,
+  category: string,
+  inequalities: string[], // e.g., ["< $70", "< $85"]
+): MarketContainer {
+  const subMarkets = new Map<string, BinaryMarketState>()
+
+  inequalities.forEach((inequality) => {
+    const metadata: MarketMetadata = {
+      title: `${title} - ${inequality}`,
+      description,
+      category,
+      endDate: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days from now
+      resolutionSource: "Oracle",
+      options: ["Yes", "No"], // All sub-markets are binary
+    }
+
+    // Each sub-market gets its own initial seeder and state
+    const initialSeederAmount = 10000 * SCALE // e.g., 10,000 XLM
+    const marketState = initializeBinaryMarket(metadata, [
+      { address: `initial_seeder_${inequality}`, amount: initialSeederAmount },
+    ])
+
+    // You can add more complex, randomized initial trades here if needed
+    // to make each sub-market's starting price different.
+    // For now, they all start at 50/50.
+
+    subMarkets.set(inequality, marketState)
+  })
+
+  return {
+    id,
     title,
-    description: "Simulated market",
-    category: "Simulation",
-    endDate: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days from now
-    resolutionSource: "Oracle",
-    options,
+    description,
+    category,
+    subMarkets,
   }
-
-  // Initialize with a single seeder
-  const seeders = new MarketMap<string, SeederInfo>()
-  const qSeeders = new MarketMap<string, number[]>()
-  const qReal = new MarketMap<number, number>()
-  const shares = new MarketMap<[string, number], number>()
-  const history: any[] = []
-
-  // Initial seeder with uniform priors
-  const initialSeed = 10000 * SCALE
-  const n = options.length
-  const priorValue = Math.floor(SCALE / n)
-  const prior = Array(n).fill(priorValue)
-
-  // Adjust last value to ensure sum is exactly SCALE
-  const sum = prior.reduce((a, b) => a + b, 0)
-  prior[n - 1] += SCALE - sum
-
-  // Calculate initial b
-  const piMin = Math.min(...prior)
-  const lnPiMin = ln(toFixed(piMin))
-  const b = Math.floor((initialSeed * SCALE) / fromFixed(-lnPiMin))
-
-  seeders.set("initial_seeder", {
-    seedAmountStroops: initialSeed,
-    liquidityParamB: b,
-    prior,
-  })
-
-  // Initialize qSeeders with zeros
-  qSeeders.set("initial_seeder", Array(n).fill(0))
-
-  // Initialize qReal with zeros
-  for (let i = 0; i < n; i++) {
-    qReal.set(i, 0)
-  }
-
-  // Record initial state
-  const initialPrices: number[] = []
-  for (let i = 0; i < n; i++) {
-    const price = marketPrice(qSeeders, seeders, i)
-    initialPrices.push(price)
-  }
-
-  history.push({
-    type: "seed",
-    actor: "initial_seeder",
-    seedAmount: toFixed(initialSeed), // Convert stroops to XLM for display
-    bValue: toFixed(b), // Convert stroops to XLM for display
-    prices: initialPrices,
-    timestamp: 0,
-  })
-
-  // Execute trades
-  let timestamp = 1
-  for (const trade of trades) {
-    if (trade.shares > 0) {
-      // Buying - use executeBuy to actually update the market state
-      const { cost, fee, newPrices } = executeBuy(trade.trader, trade.outcome, trade.shares, {
-        metadata,
-        seeders,
-        qSeeders,
-        qReal,
-        shares,
-      })
-
-      history.push({
-        type: "trade",
-        actor: trade.trader,
-        outcome: trade.outcome,
-        shares: trade.shares,
-        cost: toFixed(cost),
-        prices: newPrices,
-        timestamp: timestamp++,
-      })
-    } else if (trade.shares < 0) {
-      // Selling - use executeSell to actually update the market state
-      const sharesToSell = Math.abs(trade.shares)
-      const currentShares = shares.get([trade.trader, trade.outcome]) || 0
-
-      if (currentShares >= sharesToSell) {
-        const { refund, newPrices } = executeSell(trade.trader, trade.outcome, sharesToSell, {
-          metadata,
-          seeders,
-          qSeeders,
-          qReal,
-          shares,
-        })
-
-        history.push({
-          type: "trade",
-          actor: trade.trader,
-          outcome: trade.outcome,
-          shares: -sharesToSell,
-          cost: -toFixed(refund),
-          prices: newPrices,
-          timestamp: timestamp++,
-        })
-      }
-    }
-
-    // Execute callback if provided (e.g., to add a new seeder)
-    if (trade.afterTrade) {
-      trade.afterTrade()
-    }
-  }
-
-  return { metadata, seeders, qSeeders, qReal, shares, history }
-}
-
-// Create a realistic binary market simulation
-export function createBinaryMarketSimulation() {
-  const market = {
-    metadata: null as any,
-    seeders: null as any,
-    qSeeders: null as any,
-    qReal: null as any,
-    shares: null as any,
-    history: null as any,
-  }
-
-  const simulation = simulateMarket(
-    "Will the candidate win the election?",
-    ["Yes", "No"],
-    [
-      // Initial trades to move the market
-      { trader: "trader1", outcome: 0, shares: 1000 }, // Buy Yes
-      { trader: "trader2", outcome: 1, shares: 500 }, // Buy No
-      { trader: "trader3", outcome: 0, shares: 2000 }, // Buy Yes
-
-      // Add second seeder after some trading
-      {
-        trader: "trader4",
-        outcome: 0,
-        shares: 500,
-        afterTrade: () => {
-          if (market.metadata) {
-            addSeeder(
-              {
-                metadata: market.metadata,
-                seeders: market.seeders,
-                qSeeders: market.qSeeders,
-                qReal: market.qReal,
-                shares: market.shares,
-              },
-              "seeder2",
-              3000 * SCALE,
-            )
-
-            // Record seeding event
-            const prices: number[] = []
-            for (let i = 0; i < 2; i++) {
-              const price = marketPrice(market.qSeeders, market.seeders, i)
-              prices.push(price)
-            }
-
-            const seederInfo = market.seeders.get("seeder2")!
-            market.history.push({
-              type: "seed",
-              actor: "seeder2",
-              seedAmount: toFixed(seederInfo.seedAmountStroops),
-              bValue: toFixed(seederInfo.liquidityParamB),
-              prices,
-              timestamp: market.history.length,
-            })
-          }
-        },
-      },
-
-      // More trading after second seeder
-      { trader: "trader5", outcome: 1, shares: 1500 }, // Buy No
-      { trader: "trader1", outcome: 0, shares: -500 }, // Sell Yes
-      { trader: "trader6", outcome: 0, shares: 1000 }, // Buy Yes
-
-      // Add third seeder
-      {
-        trader: "trader7",
-        outcome: 1,
-        shares: 800,
-        afterTrade: () => {
-          if (market.metadata) {
-            addSeeder(
-              {
-                metadata: market.metadata,
-                seeders: market.seeders,
-                qSeeders: market.qSeeders,
-                qReal: market.qReal,
-                shares: market.shares,
-              },
-              "seeder3",
-              2000 * SCALE,
-            )
-
-            // Record seeding event
-            const prices: number[] = []
-            for (let i = 0; i < 2; i++) {
-              const price = marketPrice(market.qSeeders, market.seeders, i)
-              prices.push(price)
-            }
-
-            const seederInfo = market.seeders.get("seeder3")!
-            market.history.push({
-              type: "seed",
-              actor: "seeder3",
-              seedAmount: toFixed(seederInfo.seedAmountStroops),
-              bValue: toFixed(seederInfo.liquidityParamB),
-              prices,
-              timestamp: market.history.length,
-            })
-          }
-        },
-      },
-
-      // Final trades
-      { trader: "trader8", outcome: 0, shares: 1200 },
-      { trader: "trader2", outcome: 1, shares: -300 }, // Sell No
-    ],
-  )
-
-  // Store the market reference for the callbacks
-  market.metadata = simulation.metadata
-  market.seeders = simulation.seeders
-  market.qSeeders = simulation.qSeeders
-  market.qReal = simulation.qReal
-  market.shares = simulation.shares
-  market.history = simulation.history
-
-  return simulation
-}
-
-// Create a categorical market simulation
-export function createCategoricalMarketSimulation(numOptions = 5) {
-  const market = {
-    metadata: null as any,
-    seeders: null as any,
-    qSeeders: null as any,
-    qReal: null as any,
-    shares: null as any,
-    history: null as any,
-  }
-
-  // Generate option names based on the number of options
-  const options = Array.from({ length: numOptions }, (_, i) => `Option ${i + 1}`)
-
-  const simulation = simulateMarket("Who will win the tournament?", options, [
-    // Initial trades - dynamically create trades for each option
-    ...options.map((_, index) => ({
-      trader: `trader${index + 1}`,
-      outcome: index,
-      shares: 500 + Math.floor(Math.random() * 1000),
-    })),
-
-    // Add second seeder
-    {
-      trader: "trader_extra",
-      outcome: 0,
-      shares: 1000,
-      afterTrade: () => {
-        if (market.metadata) {
-          addSeeder(
-            {
-              metadata: market.metadata,
-              seeders: market.seeders,
-              qSeeders: market.qSeeders,
-              qReal: market.qReal,
-              shares: market.shares,
-            },
-            "seeder2",
-            5000 * SCALE,
-          )
-
-          // Record seeding event
-          const prices: number[] = []
-          for (let i = 0; i < numOptions; i++) {
-            const price = marketPrice(market.qSeeders, market.seeders, i)
-            prices.push(price)
-          }
-
-          const seederInfo = market.seeders.get("seeder2")!
-          market.history.push({
-            type: "seed",
-            actor: "seeder2",
-            seedAmount: toFixed(seederInfo.seedAmountStroops),
-            bValue: toFixed(seederInfo.liquidityParamB),
-            prices,
-            timestamp: market.history.length,
-          })
-        }
-      },
-    },
-
-    // More trades - dynamically create more trades
-    ...options.map((_, index) => ({
-      trader: `trader${index + 10}`,
-      outcome: index,
-      shares: 300 + Math.floor(Math.random() * 1200),
-    })),
-
-    // Add some sell trades
-    ...options.slice(0, 3).map((_, index) => ({
-      trader: `trader${index + 1}`,
-      outcome: index,
-      shares: -Math.floor(Math.random() * 300),
-    })),
-  ])
-
-  // Store the market reference for the callbacks
-  market.metadata = simulation.metadata
-  market.seeders = simulation.seeders
-  market.qSeeders = simulation.qSeeders
-  market.qReal = simulation.qReal
-  market.shares = simulation.shares
-  market.history = simulation.history
-
-  return simulation
-}
-
-// Create a range market simulation with flexible number of ranges
-export function createRangeMarketSimulation(numRanges = 5) {
-  const market = {
-    metadata: null as any,
-    seeders: null as any,
-    qSeeders: null as any,
-    qReal: null as any,
-    shares: null as any,
-    history: null as any,
-  }
-
-  // Generate range names based on the number of ranges
-  const ranges = Array.from({ length: numRanges }, (_, i) => `Range ${i + 1}`)
-
-  const simulation = simulateMarket("Price Range Prediction", ranges, [
-    // Initial trades - dynamically create trades for each range
-    ...ranges.map((_, index) => ({
-      trader: `trader${index + 1}`,
-      outcome: index,
-      shares: 400 + Math.floor(Math.random() * 800),
-    })),
-
-    // Add second seeder
-    {
-      trader: "trader_extra",
-      outcome: 0,
-      shares: 800,
-      afterTrade: () => {
-        if (market.metadata) {
-          addSeeder(
-            {
-              metadata: market.metadata,
-              seeders: market.seeders,
-              qSeeders: market.qSeeders,
-              qReal: market.qReal,
-              shares: market.shares,
-            },
-            "seeder2",
-            4000 * SCALE,
-          )
-
-          // Record seeding event
-          const prices: number[] = []
-          for (let i = 0; i < numRanges; i++) {
-            const price = marketPrice(market.qSeeders, market.seeders, i)
-            prices.push(price)
-          }
-
-          const seederInfo = market.seeders.get("seeder2")!
-          market.history.push({
-            type: "seed",
-            actor: "seeder2",
-            seedAmount: toFixed(seederInfo.seedAmountStroops),
-            bValue: toFixed(seederInfo.liquidityParamB),
-            prices,
-            timestamp: market.history.length,
-          })
-        }
-      },
-    },
-
-    // More trades - dynamically create more trades
-    ...ranges.map((_, index) => ({
-      trader: `trader${index + 10}`,
-      outcome: index,
-      shares: 200 + Math.floor(Math.random() * 1000),
-    })),
-
-    // Add some sell trades
-    ...ranges.slice(0, 3).map((_, index) => ({
-      trader: `trader${index + 1}`,
-      outcome: index,
-      shares: -Math.floor(Math.random() * 200),
-    })),
-  ])
-
-  // Store the market reference for the callbacks
-  market.metadata = simulation.metadata
-  market.seeders = simulation.seeders
-  market.qSeeders = simulation.qSeeders
-  market.qReal = simulation.qReal
-  market.shares = simulation.shares
-  market.history = simulation.history
-
-  return simulation
 }
 
 // Calculate cost
@@ -948,106 +627,4 @@ export function calculateCost(b: number, q: number[], priors: number[], outcomeI
 export function calculateProbability(b: number, q: number[], priors: number[], outcomeIndex: number): number {
   // Placeholder implementation
   return 0.5
-}
-
-// Execute a buy operation (not just simulation)
-export function executeBuy(
-  buyer: string,
-  outcome: number,
-  sharesCount: number,
-  market: {
-    metadata: MarketMetadata
-    seeders: MarketMap<string, SeederInfo>
-    qSeeders: MarketMap<string, number[]>
-    qReal: MarketMap<number, number>
-    shares: MarketMap<[string, number], number>
-  },
-): { cost: number; fee: number; newPrices: number[] } {
-  // First simulate the buy to get cost and new prices
-  const { cost, fee, newPrices } = simulateBuy(buyer, outcome, sharesCount, market)
-
-  // Convert sharesCount to stroops (1 share = 10^7 stroops)
-  const sharesInStroops = sharesCount * SCALE
-  const [totalB, optionsLen] = getDynamicBAndN(market.seeders)
-
-  // Construct delta_q: only outcome index increases
-  const deltaQ = Array(optionsLen).fill(0)
-  deltaQ[outcome] = sharesInStroops
-
-  // Update each seeder's q-vector proportionally
-  market.seeders.iter().forEach(([addr, info]) => {
-    const qj = market.qSeeders.get(addr) || Array(optionsLen).fill(0)
-    const b_j = info.liquidityParamB
-
-    for (let i = 0; i < optionsLen; i++) {
-      const dq = Math.floor((b_j * deltaQ[i]) / totalB)
-      qj[i] += dq
-    }
-
-    market.qSeeders.set(addr, qj)
-  })
-
-  // Update the buyer's shares
-  const prevShares = market.shares.get([buyer, outcome]) || 0
-  market.shares.set([buyer, outcome], prevShares + sharesCount)
-
-  // Update qReal
-  market.qReal = recomputeQ(market.qSeeders, market.seeders)
-
-  // Distribute fee to seeders
-  const feeDistribution = distributeFee(fee, market.seeders)
-
-  return { cost, fee, newPrices }
-}
-
-// Execute a sell operation (not just simulation)
-export function executeSell(
-  seller: string,
-  outcome: number,
-  sharesCount: number,
-  market: {
-    metadata: MarketMetadata
-    seeders: MarketMap<string, SeederInfo>
-    qSeeders: MarketMap<string, number[]>
-    qReal: MarketMap<number, number>
-    shares: MarketMap<[string, number], number>
-  },
-): { refund: number; newPrices: number[] } {
-  // Check if seller has enough shares
-  const prevShares = market.shares.get([seller, outcome]) || 0
-  if (prevShares < sharesCount) {
-    throw new Error("Not enough shares")
-  }
-
-  // First simulate the sell to get refund and new prices
-  const { refund, newPrices } = simulateSell(seller, outcome, sharesCount, market)
-
-  // Convert sharesCount to stroops (1 share = 10^7 stroops)
-  const sharesInStroops = sharesCount * SCALE
-  const [totalB, optionsLen] = getDynamicBAndN(market.seeders)
-
-  // Construct delta_q: only outcome index decreases
-  const deltaQ = Array(optionsLen).fill(0)
-  deltaQ[outcome] = -sharesInStroops
-
-  // Update each seeder's q-vector proportionally
-  market.seeders.iter().forEach(([addr, info]) => {
-    const qj = market.qSeeders.get(addr) || Array(optionsLen).fill(0)
-    const b_j = info.liquidityParamB
-
-    for (let i = 0; i < optionsLen; i++) {
-      const dq = Math.floor((b_j * deltaQ[i]) / totalB)
-      qj[i] += dq
-    }
-
-    market.qSeeders.set(addr, qj)
-  })
-
-  // Update the seller's shares
-  market.shares.set([seller, outcome], prevShares - sharesCount)
-
-  // Update qReal
-  market.qReal = recomputeQ(market.qSeeders, market.seeders)
-
-  return { refund, newPrices }
 }

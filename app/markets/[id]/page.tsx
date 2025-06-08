@@ -2,12 +2,10 @@
 
 import { useState, useEffect } from "react"
 import { useParams } from "next/navigation"
-import { Clock, TrendingUp, TrendingDown, Info, BarChart3, ArrowRightLeft } from "lucide-react"
-import Link from "next/link"
+import { Clock, BarChart3, ArrowRightLeft } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Progress } from "@/components/ui/progress"
 import { Navbar } from "@/components/navbar"
 import { Footer } from "@/components/footer"
 import { allMarkets } from "@/data/markets"
@@ -21,15 +19,14 @@ import {
   executeSell,
   marketPrice,
   toFixed,
-  addSeeder,
-  createBinaryMarketSimulation,
-  createCategoricalMarketSimulation,
+  addSeeder as addSeederToSubMarket,
   SCALE,
-  createRangeMarketSimulation,
+  createMultiBinaryMarketContainer,
+  type MarketContainer,
 } from "@/lib/market-utils"
 
-interface Trade {
-  type: "buy" | "sell"
+interface TradeLogEntry {
+  type: "Buy Yes" | "Buy No" | "Sell Yes" | "Sell No" // Expanded types
   outcome: string
   shares: string
   price: string
@@ -39,205 +36,134 @@ interface Trade {
   trader: string
 }
 
-interface MarketMetadata {
-  title: string
-  description: string
-  category: string
-  endDate: number
-  resolutionSource: string
-  options: string[]
-}
-
 export default function MarketPage() {
   const params = useParams()
   const marketId = params.id as string
-  const [market, setMarket] = useState<any>(null)
+
+  const [marketContainer, setMarketContainer] = useState<MarketContainer | null>(null)
   const [loading, setLoading] = useState(true)
-  const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null)
+  const [selectedInequality, setSelectedInequality] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("trade")
-  const [userShares, setUserShares] = useState<{ [key: string]: number }>({})
-  const [recentTrades, setRecentTrades] = useState<Trade[]>([])
-  const [userBTokens, setUserBTokens] = useState<number>(0)
-  const [userBTokenListings, setUserBTokenListings] = useState<any[]>([])
+  const [userShares, setUserShares] = useState<{ [key: string]: { yes: number; no: number } }>({})
+  const [recentTrades, setRecentTrades] = useState<TradeLogEntry[]>([])
+  const [userBTokens, setUserBTokens] = useState<{ [key: string]: number }>({})
 
   useEffect(() => {
     const fetchMarket = async () => {
       setLoading(true)
-      const foundMarket = allMarkets.find((m) => m.id === marketId)
-
-      if (foundMarket) {
-        let enhancedMarket: any = {}
-        const initialUserShares: { [key: string]: number } = {}
-        foundMarket.options.forEach((opt: any) => {
-          initialUserShares[opt.name] = 0
-        })
-
-        const marketType =
-          foundMarket.type === "binary" ? "binary" : foundMarket.type === "categorical" ? "categorical" : "ranged"
-
-        let marketSimulation
-        if (marketType === "binary") {
-          marketSimulation = createBinaryMarketSimulation()
-        } else if (marketType === "categorical") {
-          marketSimulation = createCategoricalMarketSimulation(foundMarket.options.length)
-        } else {
-          marketSimulation = createRangeMarketSimulation(foundMarket.options.length)
+      const foundMarketData = allMarkets.find((m) => m.id === marketId)
+      if (foundMarketData && foundMarketData.options && foundMarketData.options.length > 0) {
+        const inequalities = foundMarketData.options.map((o) => o.name).filter(Boolean) as string[]
+        if (inequalities.length === 0) {
+          setLoading(false)
+          return
         }
 
-        const { metadata, seeders: seedersMap, qSeeders, qReal, shares, history } = marketSimulation
-
-        metadata.title = foundMarket.title
-        metadata.description = foundMarket.description || "Market description"
-        metadata.category = foundMarket.category || ""
-        metadata.options = foundMarket.options.map((opt: any) => opt.name)
-
-        const prices: number[] = []
-        for (let i = 0; i < metadata.options.length; i++) {
-          const price = marketPrice(qSeeders, seedersMap, i)
-          prices.push(price)
-        }
-
-        const updatedOptions = foundMarket.options.map((option: any, index: number) => {
-          return { ...option, price: prices[index].toFixed(3) }
+        const container = createMultiBinaryMarketContainer(
+          foundMarketData.id,
+          foundMarketData.title,
+          foundMarketData.description || "",
+          foundMarketData.category || "",
+          inequalities,
+        )
+        setMarketContainer(container)
+        setSelectedInequality(inequalities[0])
+        const initialShares: { [key: string]: { yes: number; no: number } } = {}
+        inequalities.forEach((iq) => {
+          initialShares[iq] = { yes: 0, no: 0 }
         })
-
-        const displaySeeders: any[] = []
-        seedersMap.iter().forEach(([address, info]: [string, any]) => {
-          displaySeeders.push({
-            address: address === "initial_seeder" ? "C...XLM1" : address,
-            amount: toFixed(info.seedAmountStroops).toFixed(0),
-            b: toFixed(info.liquidityParamB).toFixed(1),
-            timestamp: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000).toLocaleDateString(),
-          })
+        setUserShares(initialShares)
+        const initialBTokens: { [key: string]: number } = {}
+        inequalities.forEach((iq) => {
+          initialBTokens[iq] = 0
         })
-
-        let totalB = 0
-        seedersMap.iter().forEach(([_, info]: [string, any]) => {
-          totalB += toFixed(info.liquidityParamB)
-        })
-
-        let totalLiquidity = 0
-        seedersMap.iter().forEach(([_, info]: [string, any]) => {
-          totalLiquidity += toFixed(info.seedAmountStroops)
-        })
-
-        const simulatedTrades: Trade[] = history
-          .filter((event: any) => event.type === "trade")
-          .map((event: any) => {
-            const outcome = metadata.options[event.outcome]
-            return {
-              type: event.shares > 0 ? "buy" : "sell",
-              outcome,
-              shares: Math.abs(event.shares).toString(),
-              price: event.prices[event.outcome].toFixed(3),
-              cost: Math.abs(event.cost).toFixed(2),
-              fee: event.shares > 0 ? (0.02 * event.shares).toFixed(2) : "0.00",
-              timestamp: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString(),
-              trader: event.actor,
-            }
-          })
-          .slice(0, 10)
-
-        enhancedMarket = {
-          ...foundMarket,
-          options: updatedOptions,
-          b: totalB,
-          priors: seedersMap.get("initial_seeder")?.prior.map((p: number) => toFixed(p)) || [],
-          marketType,
-          metadata,
-          seeders: displaySeeders,
-          seedersMap,
-          qSeeders,
-          qReal,
-          shares,
-          totalLiquidity: Math.round(totalLiquidity),
-          totalVolume: Math.round(totalLiquidity * 0.5),
-          resolutionDate: "November 5, 2024",
-          creator: "C...XLM6",
-          creationBond: "1000 XLM",
-          oracle: "Decentralized Oracle Network",
-          category: foundMarket.category,
-          tags: ["Politics", "Election", "USA", 2024],
-        }
-        setMarket(enhancedMarket)
-        setUserShares(initialUserShares)
-        setRecentTrades(simulatedTrades)
+        setUserBTokens(initialBTokens)
+      } else {
+        setMarketContainer(null)
+        setSelectedInequality(null)
       }
       setTimeout(() => setLoading(false), 500)
     }
     fetchMarket()
   }, [marketId])
 
-  const handleOutcomeSelect = (outcome: string) => setSelectedOutcome(outcome)
+  const handleTrade = ({
+    assetType, // "yes" or "no"
+    action, // "buy" or "sell"
+    sharesToTrade,
+    totalCostOrRefundStroops,
+    totalFeeStroops,
+  }: {
+    assetType: "yes" | "no"
+    action: "buy" | "sell"
+    sharesToTrade: number
+    totalCostOrRefundStroops: number
+    totalFeeStroops: number
+  }) => {
+    if (!marketContainer || !selectedInequality) return
 
-  const handleTrade = (outcome: string, sharesNum: number, cost: number) => {
-    const newUserShares = { ...userShares }
-    const outcomeIndex = market.options.findIndex((option: any) => option.name === outcome)
-    if (outcomeIndex === -1) {
-      console.error(`Outcome ${outcome} not found`)
+    const subMarketState = marketContainer.subMarkets.get(selectedInequality)
+    if (!subMarketState) {
+      console.error("Sub-market not found")
       return
     }
 
+    // Determine outcomeIndex based on assetType
+    const outcomeIndex = assetType === "yes" ? 0 : 1
+
     try {
-      const marketObj = {
-        metadata: market.metadata,
-        seeders: market.seedersMap,
-        qSeeders: market.qSeeders,
-        qReal: market.qReal,
-        shares: market.shares,
-      }
+      let tradeResult: any
+      let uiActionType: TradeLogEntry["type"]
+      let alertMessage: string
 
-      let tradeResult, alertMessage, tradeTypeString
-      if (sharesNum > 0) {
-        // Buy
-        tradeResult = executeBuy("user", outcomeIndex, sharesNum, marketObj)
-        const costXLM = tradeResult.cost / SCALE
-        const feeXLM = tradeResult.fee / SCALE
-        const totalCostXLM = costXLM + feeXLM
-        alertMessage = `Bought ${sharesNum} shares of ${outcome} for ${totalCostXLM.toFixed(2)} XLM (${costXLM.toFixed(2)} + ${feeXLM.toFixed(2)} fee)`
-        tradeTypeString = "buy"
-        newUserShares[outcome] = (newUserShares[outcome] || 0) + sharesNum
-      } else {
-        // Sell
-        const absShares = Math.abs(sharesNum)
-        if ((newUserShares[outcome] || 0) < absShares) {
-          alert(`Not enough shares of ${outcome} to sell.`)
-          return
+      const currentYes = userShares[selectedInequality]?.yes || 0
+      const currentNo = userShares[selectedInequality]?.no || 0
+      let newYes = currentYes
+      let newNo = currentNo
+
+      if (action === "buy") {
+        tradeResult = executeBuy("user", outcomeIndex, sharesToTrade, subMarketState)
+        if (assetType === "yes") {
+          uiActionType = "Buy Yes"
+          newYes += sharesToTrade
+          alertMessage = `Bought ${sharesToTrade} 'Yes' shares for '${selectedInequality}'. Cost: ${(totalCostOrRefundStroops / SCALE).toFixed(2)} XLM (Fee: ${(totalFeeStroops / SCALE).toFixed(2)} XLM)`
+        } else {
+          // assetType === "no"
+          uiActionType = "Buy No"
+          newNo += sharesToTrade
+          alertMessage = `Bought ${sharesToTrade} 'No' shares for '${selectedInequality}'. Cost: ${(totalCostOrRefundStroops / SCALE).toFixed(2)} XLM (Fee: ${(totalFeeStroops / SCALE).toFixed(2)} XLM)`
         }
-        tradeResult = executeSell("user", outcomeIndex, absShares, marketObj)
-        const refundXLM = tradeResult.refund / SCALE
-        alertMessage = `Sold ${absShares} shares of ${outcome} for ${refundXLM.toFixed(2)} XLM`
-        tradeTypeString = "sell"
-        newUserShares[outcome] = (newUserShares[outcome] || 0) - absShares
+      } else {
+        // action === "sell"
+        tradeResult = executeSell("user", outcomeIndex, sharesToTrade, subMarketState)
+        if (assetType === "yes") {
+          uiActionType = "Sell Yes"
+          newYes -= sharesToTrade
+          alertMessage = `Sold ${sharesToTrade} 'Yes' shares for '${selectedInequality}'. Received: ${(totalCostOrRefundStroops / SCALE).toFixed(2)} XLM`
+        } else {
+          // assetType === "no"
+          uiActionType = "Sell No"
+          newNo -= sharesToTrade
+          alertMessage = `Sold ${sharesToTrade} 'No' shares for '${selectedInequality}'. Received: ${(totalCostOrRefundStroops / SCALE).toFixed(2)} XLM`
+        }
       }
 
-      setUserShares(newUserShares)
-      const updatedOptions = market.options.map((option: any, index: number) => ({
-        ...option,
-        price: tradeResult.newPrices[index].toFixed(3),
-      }))
-      setMarket({
-        ...market,
-        options: updatedOptions,
-        qSeeders: marketObj.qSeeders,
-        qReal: marketObj.qReal,
-        shares: marketObj.shares,
-      })
+      setUserShares({ ...userShares, [selectedInequality]: { yes: newYes, no: newNo } })
+      marketContainer.subMarkets.set(selectedInequality, subMarketState)
+      setMarketContainer({ ...marketContainer })
 
-      const newTrade: Trade = {
-        type: tradeTypeString as "buy" | "sell",
-        outcome,
-        shares: Math.abs(sharesNum).toString(),
-        price: tradeResult.newPrices[outcomeIndex].toFixed(3),
-        cost:
-          tradeTypeString === "buy"
-            ? ((tradeResult.cost + tradeResult.fee) / SCALE).toFixed(2)
-            : (tradeResult.refund / SCALE).toFixed(2),
-        fee: tradeTypeString === "buy" ? (tradeResult.fee / SCALE).toFixed(2) : "0.00",
+      const priceOfTradedAsset = tradeResult.newPrices[outcomeIndex]
+      const newTradeEntry: TradeLogEntry = {
+        type: uiActionType,
+        outcome: selectedInequality,
+        shares: sharesToTrade.toString(),
+        price: priceOfTradedAsset.toFixed(3),
+        cost: (totalCostOrRefundStroops / SCALE).toFixed(2),
+        fee: (totalFeeStroops / SCALE).toFixed(2),
         timestamp: new Date().toISOString(),
         trader: "You",
       }
-      setRecentTrades([newTrade, ...recentTrades])
+      setRecentTrades([newTradeEntry, ...recentTrades].slice(0, 10))
       alert(alertMessage)
     } catch (error) {
       console.error("Trade failed:", error)
@@ -245,71 +171,41 @@ export default function MarketPage() {
     }
   }
 
-  const handleSeed = (amount: number, bValue: number) => {
+  const handleSeed = (amount: number, bValueFromPanel: number) => {
+    if (!marketContainer || !selectedInequality) return
+    const subMarketState = marketContainer.subMarkets.get(selectedInequality)
+    if (!subMarketState) return
+
     const amountInStroops = amount * SCALE
-    const marketObj = {
-      metadata: market.metadata,
-      seeders: market.seedersMap,
-      qSeeders: market.qSeeders,
-      qReal: market.qReal,
-      shares: market.shares,
-    }
-    addSeeder(marketObj, "You", amountInStroops)
-    const seederInfo = marketObj.seeders.get("You")
+    addSeederToSubMarket(subMarketState, "You", amountInStroops)
+    const seederInfo = subMarketState.seeders.get("You")
     if (!seederInfo) return
 
     const actualBValue = toFixed(seederInfo.liquidityParamB)
-    setUserBTokens(userBTokens + actualBValue)
-    const newSeeder = {
-      address: "You",
-      amount: amount.toString(),
-      b: actualBValue.toFixed(1),
-      timestamp: new Date().toLocaleDateString(),
-    }
-    const newPrices: number[] = []
-    for (let i = 0; i < market.metadata.options.length; i++) {
-      newPrices.push(marketPrice(marketObj.qSeeders, marketObj.seeders, i))
-    }
-    const updatedOptions = market.options.map((option: any, index: number) => ({
-      ...option,
-      price: newPrices[index].toFixed(3),
-    }))
-    setMarket({
-      ...market,
-      seeders: [...market.seeders, newSeeder],
-      seedersMap: marketObj.seeders,
-      qSeeders: marketObj.qSeeders,
-      options: updatedOptions,
-      b: market.b + actualBValue,
-      totalLiquidity: market.totalLiquidity + amount,
-    })
-    alert(`Successfully seeded market with ${amount} XLM and received ${actualBValue.toFixed(1)} b-tokens!`)
+    setUserBTokens({ ...userBTokens, [selectedInequality]: (userBTokens[selectedInequality] || 0) + actualBValue })
+    marketContainer.subMarkets.set(selectedInequality, subMarketState)
+    setMarketContainer({ ...marketContainer })
+    alert(`Seeded '${selectedInequality}' with ${amount} XLM, received ${actualBValue.toFixed(1)} b-tokens!`)
     setActiveTab("secondary")
   }
 
   const handleBuyBTokens = (amount: number, pricePerB: number, seller: string) => {
-    const totalCost = amount * pricePerB
-    setUserBTokens(userBTokens + amount)
-    alert(`Successfully bought ${amount.toFixed(1)} b-tokens for ${totalCost.toFixed(2)} XLM!`)
+    if (!selectedInequality) return
+    setUserBTokens({ ...userBTokens, [selectedInequality]: (userBTokens[selectedInequality] || 0) + amount })
+    alert(`Bought ${amount.toFixed(1)} b-tokens for ${selectedInequality}!`)
   }
 
   const handleSellBTokens = (amount: number, pricePerB: number) => {
-    if (amount > userBTokens) {
-      alert("You don't have enough b-tokens!")
+    if (!selectedInequality) return
+    if (amount > (userBTokens[selectedInequality] || 0)) {
+      alert("Not enough b-tokens!")
       return
     }
-    const newListing = {
-      bAmount: amount,
-      pricePerB,
-      totalPrice: amount * pricePerB,
-      timestamp: new Date().toISOString(),
-    }
-    setUserBTokenListings([...userBTokenListings, newListing])
-    setUserBTokens(userBTokens - amount)
-    alert(`Listed ${amount.toFixed(1)} b-tokens for sale at ${pricePerB.toFixed(2)} XLM each!`)
+    setUserBTokens({ ...userBTokens, [selectedInequality]: (userBTokens[selectedInequality] || 0) - amount })
+    alert(`Listed ${amount.toFixed(1)} b-tokens for ${selectedInequality} for sale!`)
   }
 
-  if (loading) {
+  if (loading || !marketContainer) {
     return (
       <div className="flex min-h-screen flex-col bg-black">
         <Navbar />
@@ -323,106 +219,56 @@ export default function MarketPage() {
       </div>
     )
   }
+  const activeSubMarket = selectedInequality ? marketContainer.subMarkets.get(selectedInequality) : null
+  const marketData = allMarkets.find((m) => m.id === marketId)
+  if (!marketData) return <div>Market data not found.</div>
 
-  if (!market) {
-    return (
-      <div className="flex min-h-screen flex-col bg-black">
-        <Navbar />
-        <main className="flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <h1 className="text-2xl font-bold text-white mb-4">Market Not Found</h1>
-            <p className="text-zinc-400 mb-6">The market you're looking for doesn't exist or has been removed.</p>
-            <Link href="/">
-              <Button>Back to Home</Button>
-            </Link>
-          </div>
-        </main>
-        <Footer />
-      </div>
-    )
-  }
-
-  const isBinary = market.marketType === "binary"
-  const isCategorical = market.marketType === "categorical"
-  const isRanged = market.marketType === "ranged"
-
-  const getTrendIcon = () => {
-    if (market.trend === "up") return <TrendingUp className="h-4 w-4 text-green-400" />
-    if (market.trend === "down") return <TrendingDown className="h-4 w-4 text-red-400" />
-    return null
-  }
-  const getTrendColor = () => {
-    if (market.trend === "up") return "text-green-400"
-    if (market.trend === "down") return "text-red-400"
-    return "text-zinc-400"
-  }
-  const getOutcomeColor = (index: number) => {
-    const colors = ["green", "red", "blue", "purple", "yellow", "orange", "pink", "indigo", "teal", "cyan"]
-    return colors[index % colors.length]
-  }
+  const totalLiquidity = Array.from(marketContainer.subMarkets.values()).reduce(
+    (acc, sm) => acc + toFixed(Array.from(sm.seeders.values()).reduce((s, si) => s + si.seedAmountStroops, 0)),
+    0,
+  )
+  const totalVolume = totalLiquidity * 0.5 // Placeholder
+  const currentMarketB = activeSubMarket
+    ? toFixed(Array.from(activeSubMarket.seeders.values()).reduce((s, si) => s + si.liquidityParamB, 0))
+    : 0
 
   return (
     <div className="flex min-h-screen flex-col bg-black">
       <Navbar />
       <main className="flex-1">
         <div className="container px-4 py-4 md:px-6">
+          {/* Header Section */}
           <div className="mb-4">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-2">
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <span className="inline-block rounded-full bg-yellow-500/10 px-2.5 py-0.5 text-xs text-yellow-500">
-                    {market.category}
+                    {marketContainer.category}
                   </span>
                   <div className="flex items-center text-xs text-zinc-400">
                     <Clock className="mr-1 h-3 w-3" />
-                    <span>Resolves {market.resolutionDate}</span>
+                    <span>Resolves {marketData.endDate}</span>
                   </div>
                 </div>
-                <h1 className="text-xl md:text-2xl font-bold text-white">{market.title}</h1>
+                <h1 className="text-xl md:text-2xl font-bold text-white">{marketContainer.title}</h1>
               </div>
               <div className="flex items-center gap-3">
                 <div className="text-center">
-                  <div className="text-xs text-zinc-400">24h Volume</div>
-                  <div className="font-medium text-white">${formatNumber(market.totalVolume)}</div>
+                  <div className="text-xs text-zinc-400">24h Vol</div>
+                  <div className="font-medium text-white">${formatNumber(totalVolume)}</div>
                 </div>
                 <div className="text-center">
                   <div className="text-xs text-zinc-400">Liquidity</div>
-                  <div className="font-medium text-white">${formatNumber(market.totalLiquidity)}</div>
-                </div>
-                <div className="relative group flex items-center">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-8 w-8 border-zinc-700 text-zinc-400 hover:bg-zinc-800 hover:text-white focus-visible:ring-yellow-500"
-                    aria-describedby="info-tooltip-content"
-                  >
-                    <Info className="h-4 w-4" />
-                  </Button>
-                  <div
-                    id="info-tooltip-content"
-                    role="tooltip"
-                    className="absolute top-full mt-2 w-max max-w-[calc(100vw-48px)] sm:max-w-xs 
-                               left-1/2 -translate-x-1/2 
-                               md:left-auto md:right-0 md:-translate-x-0
-                               bg-zinc-900 text-zinc-100 text-sm border border-zinc-700 p-3 rounded-md shadow-xl 
-                               opacity-0 group-hover:opacity-100 transition-opacity duration-150 ease-in-out pointer-events-none z-[60]"
-                  >
-                    This market uses LMSR (Logarithmic Market Scoring Rule) for pricing. The combined liquidity
-                    parameter (b) is {market.b.toFixed(1)} XLM. Higher 'b' means lower price sensitivity to trades.
-                    {/* Arrow pointing upwards to the button */}
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 w-2 h-2 md:left-auto md:right-2 md:-translate-x-0">
-                      <div className="w-full h-full bg-zinc-900 border-l border-t border-zinc-700 transform rotate-45 mt-1"></div>
-                    </div>
-                  </div>
+                  <div className="font-medium text-white">${formatNumber(totalLiquidity)}</div>
                 </div>
               </div>
             </div>
-            <p className="text-sm text-zinc-400">{market.description}</p>
+            <p className="text-sm text-zinc-400">{marketContainer.description}</p>
           </div>
 
           {/* Mobile Layout */}
           <div className="block lg:hidden mb-4">
-            <Tabs defaultValue="trade" className="w-full">
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <TabsList className="grid grid-cols-4 bg-zinc-900 border-zinc-800">
                 <TabsTrigger value="trade">Trade</TabsTrigger>
                 <TabsTrigger value="seed">Seed</TabsTrigger>
@@ -432,106 +278,43 @@ export default function MarketPage() {
               <TabsContent value="trade" className="mt-2">
                 <Card className="bg-zinc-900 border-zinc-800 mb-3">
                   <CardHeader className="p-3">
-                    <CardTitle className="text-base">Current Prices</CardTitle>
+                    <CardTitle className="text-base">Price Levels</CardTitle>
                   </CardHeader>
                   <CardContent className="p-3 pt-0">
-                    {isBinary && (
-                      <div className="space-y-3">
-                        <div>
-                          <div className="flex justify-between text-sm mb-1">
-                            <span className="text-zinc-400">Probability</span>
-                            <span className="text-white">
-                              {(Number.parseFloat(market.options[0].price) * 100).toFixed(1)}%
-                            </span>
-                          </div>
-                          <Progress
-                            value={Number.parseFloat(market.options[0].price) * 100}
-                            className="h-2 bg-zinc-700"
-                          />
-                          <div className="flex justify-between text-xs mt-1">
-                            <span className="text-green-400">Yes: {market.options[0].price}</span>
-                            <span className="text-red-400">No: {market.options[1].price}</span>
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 gap-2">
+                      {marketData.options.map((option) => {
+                        const subM = marketContainer.subMarkets.get(option.name)
+                        const price = subM ? marketPrice(subM.qSeeders, subM.seeders, 0) : 0
+                        return (
                           <div
-                            className={`p-2 rounded-lg border border-green-500/30 bg-green-500/5 cursor-pointer transition-all ${selectedOutcome === "Yes" ? "ring-1 ring-green-500" : ""}`}
-                            onClick={() => handleOutcomeSelect("Yes")}
+                            key={option.name}
+                            className={`p-2 rounded-lg border border-yellow-500/30 bg-yellow-500/5 cursor-pointer ${selectedInequality === option.name ? "ring-1 ring-yellow-500" : ""}`}
+                            onClick={() => setSelectedInequality(option.name)}
                           >
                             <div className="flex justify-between items-center mb-0.5">
-                              <span className="font-medium text-white">Yes</span>
-                              <span className="text-green-400">{market.options[0].price}</span>
+                              <span className="font-medium text-white">{option.name}</span>
+                              <span className="text-yellow-400">{price.toFixed(2)}</span>
                             </div>
-                            <div className="text-xs text-zinc-400">Pays 1 XLM if outcome is Yes</div>
+                            <div className="text-xs text-zinc-400">Pays 1 XLM if Yes</div>
                           </div>
-                          <div
-                            className={`p-2 rounded-lg border border-red-500/30 bg-red-500/5 cursor-pointer transition-all ${selectedOutcome === "No" ? "ring-1 ring-red-500" : ""}`}
-                            onClick={() => handleOutcomeSelect("No")}
-                          >
-                            <div className="flex justify-between items-center mb-0.5">
-                              <span className="font-medium text-white">No</span>
-                              <span className="text-red-400">{market.options[1].price}</span>
-                            </div>
-                            <div className="text-xs text-zinc-400">Pays 1 XLM if outcome is No</div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    {isCategorical && (
-                      <div className="space-y-3">
-                        <div className="grid grid-cols-1 gap-2">
-                          {market.options.map((option: any, index: number) => {
-                            const color = getOutcomeColor(index)
-                            return (
-                              <div
-                                key={option.name}
-                                className={`p-2 rounded-lg border border-${color}-500/30 bg-${color}-500/5 cursor-pointer transition-all ${selectedOutcome === option.name ? `ring-1 ring-${color}-500` : ""}`}
-                                onClick={() => handleOutcomeSelect(option.name)}
-                              >
-                                <div className="flex justify-between items-center mb-0.5">
-                                  <span className="font-medium text-white">{option.name}</span>
-                                  <span className={`text-${color}-400`}>{option.price}</span>
-                                </div>
-                                <div className="text-xs text-zinc-400">Pays 1 XLM if outcome is {option.name}</div>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    )}
-                    {isRanged && (
-                      <div className="space-y-3">
-                        <div className="grid grid-cols-1 gap-2">
-                          {market.options.map((option: any, index: number) => {
-                            const color = getOutcomeColor(index)
-                            return (
-                              <div
-                                key={option.name}
-                                className={`p-2 rounded-lg border border-${color}-500/30 bg-${color}-500/5 cursor-pointer transition-all ${selectedOutcome === option.name ? `ring-1 ring-${color}-500` : ""}`}
-                                onClick={() => handleOutcomeSelect(option.name)}
-                              >
-                                <div className="flex justify-between items-center mb-0.5">
-                                  <span className="font-medium text-white">{option.name}</span>
-                                  <span className={`text-${color}-400`}>{option.price}</span>
-                                </div>
-                                <div className="text-xs text-zinc-400">Pays 1 XLM if outcome is {option.name}</div>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    )}
+                        )
+                      })}
+                    </div>
                   </CardContent>
                 </Card>
-                <UnifiedTradeInterface
-                  market={market}
-                  selectedOutcome={selectedOutcome}
-                  userShares={userShares}
-                  onSelectOutcome={handleOutcomeSelect}
-                  onTrade={handleTrade}
-                  qSeeders={market.qSeeders}
-                  seeders={market.seedersMap}
-                />
+                {activeSubMarket && selectedInequality && marketData && (
+                  <UnifiedTradeInterface
+                    market={{
+                      ...activeSubMarket,
+                      marketType: "range",
+                      range: marketData.range || { min: 0, max: 100 },
+                    }}
+                    selectedRange={selectedInequality}
+                    userYesShares={userShares[selectedInequality]?.yes || 0}
+                    userNoShares={userShares[selectedInequality]?.no || 0}
+                    onTradeSubmit={handleTrade}
+                  />
+                )}
                 <Card className="bg-zinc-900 border-zinc-800 mt-3">
                   <CardHeader className="p-3">
                     <CardTitle className="text-base">Recent Activity</CardTitle>
@@ -542,41 +325,23 @@ export default function MarketPage() {
                 </Card>
               </TabsContent>
               <TabsContent value="seed" className="mt-2">
-                <MarketSeedingPanel market={market} onSeed={handleSeed} />
+                {activeSubMarket && selectedInequality && (
+                  <MarketSeedingPanel market={activeSubMarket} onSeed={handleSeed} inequality={selectedInequality} />
+                )}
               </TabsContent>
               <TabsContent value="secondary" className="mt-2">
-                <SecondaryMarketInterface
-                  market={market}
-                  userBTokens={userBTokens}
-                  onBuy={handleBuyBTokens}
-                  onSell={handleSellBTokens}
-                />
+                {activeSubMarket && selectedInequality && (
+                  <SecondaryMarketInterface
+                    market={activeSubMarket}
+                    userBTokens={userBTokens[selectedInequality] || 0}
+                    onBuy={handleBuyBTokens}
+                    onSell={handleSellBTokens}
+                    inequality={selectedInequality}
+                  />
+                )}
               </TabsContent>
               <TabsContent value="info" className="mt-2">
-                <Card className="bg-zinc-900 border-zinc-800 mb-3">
-                  <CardHeader className="p-3">
-                    <CardTitle className="text-base">Market Seeders</CardTitle>
-                  </CardHeader>
-                  <CardContent className="p-3 pt-0">
-                    <div className="space-y-2">
-                      {market.seeders.map((seeder: any, index: number) => (
-                        <div key={index} className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg">
-                          <div>
-                            <div className="text-sm font-medium text-white">{seeder.address}</div>
-                            <div className="text-xs text-zinc-400">Seeded {seeder.timestamp}</div>
-                          </div>
-                          <div className="text-right">
-                            <div className="text-sm font-medium text-white">{seeder.b} b</div>
-                            <div className="text-xs text-zinc-400">
-                              ({((Number(seeder.b) / market.b) * 100).toFixed(1)}% of pool)
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-                <MarketInfoPanel market={market} />
+                {activeSubMarket && <MarketInfoPanel market={activeSubMarket} />}
               </TabsContent>
             </Tabs>
           </div>
@@ -586,104 +351,31 @@ export default function MarketPage() {
             <div className="lg:col-span-2 space-y-4">
               <Card className="bg-zinc-900 border-zinc-800">
                 <CardHeader className="p-3">
-                  <CardTitle className="text-base flex items-center justify-between">
-                    <span>Current Prices</span>
-                    <div className="flex items-center gap-1 text-sm">
-                      {getTrendIcon()}
-                      <span className={`${getTrendColor()}`}>{market.change || "0.0"}%</span>
-                    </div>
-                  </CardTitle>
+                  <CardTitle className="text-base">Price Levels</CardTitle>
                 </CardHeader>
                 <CardContent className="p-3 pt-0">
-                  {isBinary && (
-                    <div className="space-y-3">
-                      <div>
-                        <div className="flex justify-between text-sm mb-1">
-                          <span className="text-zinc-400">Probability</span>
-                          <span className="text-white">
-                            {(Number.parseFloat(market.options[0].price) * 100).toFixed(1)}%
-                          </span>
-                        </div>
-                        <Progress
-                          value={Number.parseFloat(market.options[0].price) * 100}
-                          className="h-2 bg-zinc-700"
-                        />
-                        <div className="flex justify-between text-xs mt-1">
-                          <span className="text-green-400">Yes: {market.options[0].price}</span>
-                          <span className="text-red-400">No: {market.options[1].price}</span>
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {marketData.options.map((option) => {
+                      const subM = marketContainer.subMarkets.get(option.name)
+                      const price = subM ? marketPrice(subM.qSeeders, subM.seeders, 0) : 0
+                      return (
                         <div
-                          className={`p-2 rounded-lg border border-green-500/30 bg-green-500/5 cursor-pointer transition-all ${selectedOutcome === "Yes" ? "ring-1 ring-green-500" : ""}`}
-                          onClick={() => handleOutcomeSelect("Yes")}
+                          key={option.name}
+                          className={`p-2 rounded-lg border border-yellow-500/30 bg-yellow-500/5 cursor-pointer ${selectedInequality === option.name ? "ring-1 ring-yellow-500" : ""}`}
+                          onClick={() => setSelectedInequality(option.name)}
                         >
                           <div className="flex justify-between items-center mb-0.5">
-                            <span className="font-medium text-white">Yes</span>
-                            <span className="text-green-400">{market.options[0].price}</span>
+                            <span className="font-medium text-white">{option.name}</span>
+                            <span className="text-yellow-400">{price.toFixed(2)}</span>
                           </div>
-                          <div className="text-xs text-zinc-400">Pays 1 XLM if outcome is Yes</div>
+                          <div className="text-xs text-zinc-400">Pays 1 XLM if Yes</div>
                         </div>
-                        <div
-                          className={`p-2 rounded-lg border border-red-500/30 bg-red-500/5 cursor-pointer transition-all ${selectedOutcome === "No" ? "ring-1 ring-red-500" : ""}`}
-                          onClick={() => handleOutcomeSelect("No")}
-                        >
-                          <div className="flex justify-between items-center mb-0.5">
-                            <span className="font-medium text-white">No</span>
-                            <span className="text-red-400">{market.options[1].price}</span>
-                          </div>
-                          <div className="text-xs text-zinc-400">Pays 1 XLM if outcome is No</div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  {isCategorical && (
-                    <div className="space-y-3">
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                        {market.options.map((option: any, index: number) => {
-                          const color = getOutcomeColor(index)
-                          return (
-                            <div
-                              key={option.name}
-                              className={`p-2 rounded-lg border border-${color}-500/30 bg-${color}-500/5 cursor-pointer transition-all ${selectedOutcome === option.name ? `ring-1 ring-${color}-500` : ""}`}
-                              onClick={() => handleOutcomeSelect(option.name)}
-                            >
-                              <div className="flex justify-between items-center mb-0.5">
-                                <span className="font-medium text-white">{option.name}</span>
-                                <span className={`text-${color}-400`}>{option.price}</span>
-                              </div>
-                              <div className="text-xs text-zinc-400">Pays 1 XLM if outcome is {option.name}</div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )}
-                  {isRanged && (
-                    <div className="space-y-3">
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                        {market.options.map((option: any, index: number) => {
-                          const color = getOutcomeColor(index)
-                          return (
-                            <div
-                              key={option.name}
-                              className={`p-2 rounded-lg border border-${color}-500/30 bg-${color}-500/5 cursor-pointer transition-all ${selectedOutcome === option.name ? `ring-1 ring-${color}-500` : ""}`}
-                              onClick={() => handleOutcomeSelect(option.name)}
-                            >
-                              <div className="flex justify-between items-center mb-0.5">
-                                <span className="font-medium text-white">{option.name}</span>
-                                <span className={`text-${color}-400`}>{option.price}</span>
-                              </div>
-                              <div className="text-xs text-zinc-400">Pays 1 XLM if outcome is {option.name}</div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )}
+                      )
+                    })}
+                  </div>
                 </CardContent>
               </Card>
-              <Tabs defaultValue="trade" value={activeTab} onValueChange={setActiveTab} className="w-full">
+              <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
                 <TabsList className="grid grid-cols-4 bg-zinc-900 border-zinc-800">
                   <TabsTrigger value="trade">Trade</TabsTrigger>
                   <TabsTrigger value="seed">Seed</TabsTrigger>
@@ -691,15 +383,19 @@ export default function MarketPage() {
                   <TabsTrigger value="info">Info</TabsTrigger>
                 </TabsList>
                 <TabsContent value="trade" className="space-y-4 mt-2">
-                  <UnifiedTradeInterface
-                    market={market}
-                    selectedOutcome={selectedOutcome}
-                    userShares={userShares}
-                    onSelectOutcome={handleOutcomeSelect}
-                    onTrade={handleTrade}
-                    qSeeders={market.qSeeders}
-                    seeders={market.seedersMap}
-                  />
+                  {activeSubMarket && selectedInequality && marketData && (
+                    <UnifiedTradeInterface
+                      market={{
+                        ...activeSubMarket,
+                        marketType: "range",
+                        range: marketData.range || { min: 0, max: 100 },
+                      }}
+                      selectedRange={selectedInequality}
+                      userYesShares={userShares[selectedInequality]?.yes || 0}
+                      userNoShares={userShares[selectedInequality]?.no || 0}
+                      onTradeSubmit={handleTrade}
+                    />
+                  )}
                   <Card className="bg-zinc-900 border-zinc-800">
                     <CardHeader className="p-3">
                       <CardTitle className="text-base">Recent Activity</CardTitle>
@@ -710,90 +406,118 @@ export default function MarketPage() {
                   </Card>
                 </TabsContent>
                 <TabsContent value="seed" className="mt-2">
-                  <MarketSeedingPanel market={market} onSeed={handleSeed} />
+                  {activeSubMarket && selectedInequality && (
+                    <MarketSeedingPanel market={activeSubMarket} onSeed={handleSeed} inequality={selectedInequality} />
+                  )}
                 </TabsContent>
                 <TabsContent value="secondary" className="mt-2">
-                  <SecondaryMarketInterface
-                    market={market}
-                    userBTokens={userBTokens}
-                    onBuy={handleBuyBTokens}
-                    onSell={handleSellBTokens}
-                  />
+                  {activeSubMarket && selectedInequality && (
+                    <SecondaryMarketInterface
+                      market={activeSubMarket}
+                      userBTokens={userBTokens[selectedInequality] || 0}
+                      onBuy={handleBuyBTokens}
+                      onSell={handleSellBTokens}
+                      inequality={selectedInequality}
+                    />
+                  )}
                 </TabsContent>
                 <TabsContent value="info" className="mt-2">
-                  <MarketInfoPanel market={market} />
+                  {activeSubMarket && <MarketInfoPanel market={activeSubMarket} />}
                 </TabsContent>
               </Tabs>
             </div>
-            <div>
-              {" "}
-              {/* Right Column */}
-              <div className="sticky top-20" style={{ zIndex: 10 }}>
-                <Card className="bg-zinc-900 border-zinc-800 mb-4">
-                  <CardHeader className="p-3">
-                    <CardTitle className="text-base">Your Positions</CardTitle>
-                  </CardHeader>
-                  <CardContent className="p-3 pt-0">
-                    <div className="space-y-2">
-                      {Object.entries(userShares).map(
-                        ([outcome, shares]) =>
-                          shares > 0 && (
-                            <div key={outcome} className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg">
-                              <div className="text-sm font-medium text-white">{outcome}</div>
-                              <div className="text-sm font-medium text-white">{shares} shares</div>
+            {/* Right Column */}
+            <div className="sticky top-20" style={{ zIndex: 10 }}>
+              <Card className="bg-zinc-900 border-zinc-800 mb-4">
+                <CardHeader className="p-3">
+                  <CardTitle className="text-base">Your Positions</CardTitle>
+                </CardHeader>
+                <CardContent className="p-3 pt-0">
+                  <div className="space-y-2">
+                    {Object.entries(userShares).map(([ineq, shares]) => {
+                      const { yes: yesShares, no: noShares } = shares
+                      return (
+                        <div key={ineq}>
+                          {yesShares > 0 && (
+                            <div className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg mb-1">
+                              <div>
+                                <div className="text-sm font-medium text-white">{ineq}</div>
+                                <div className="text-xs text-zinc-400">Yes Shares</div>
+                              </div>
+                              <div className="text-sm font-medium text-white">{yesShares}</div>
                             </div>
-                          ),
-                      )}
-                      {userBTokens > 0 && (
-                        <div className="p-2 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-                          <div className="flex justify-between items-center mb-1">
-                            <div className="flex items-center gap-1.5">
-                              <ArrowRightLeft className="h-4 w-4 text-blue-400" />
-                              <span className="text-sm font-medium text-white">b-tokens</span>
+                          )}
+                          {noShares > 0 && (
+                            <div className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg">
+                              <div>
+                                <div className="text-sm font-medium text-white">{ineq}</div>
+                                <div className="text-xs text-zinc-400">No Shares</div>
+                              </div>
+                              <div className="text-sm font-medium text-white">{noShares}</div>
                             </div>
-                            <div className="text-sm font-medium text-white">{userBTokens.toFixed(1)} b</div>
-                          </div>
-                          <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-xs text-zinc-400 mb-2">
-                            <div>Fee Share:</div>
-                            <div className="text-right">{((userBTokens / market.b) * 100).toFixed(2)}%</div>
-                            <div>Est. Value:</div>
-                            <div className="text-right">{(userBTokens * 0.85).toFixed(2)} XLM</div>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="w-full text-xs border-blue-500/50 text-blue-400 hover:bg-blue-500/20"
-                            onClick={() => setActiveTab("secondary")}
-                          >
-                            <ArrowRightLeft className="h-3 w-3 mr-1" />
-                            Trade on Secondary Market
-                          </Button>
+                          )}
                         </div>
+                      )
+                    })}
+                    {Object.entries(userBTokens).map(
+                      ([ineq, bAmount]) =>
+                        bAmount > 0 && (
+                          <div key={`${ineq}-bt`} className="p-2 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                            <div className="flex justify-between items-center mb-1">
+                              <div className="flex items-center gap-1.5">
+                                <ArrowRightLeft className="h-4 w-4 text-blue-400" />
+                                <span className="text-sm font-medium text-white">b-tokens ({ineq})</span>
+                              </div>
+                              <div className="text-sm font-medium text-white">{bAmount.toFixed(1)} b</div>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full text-xs border-blue-500/50 text-blue-400 hover:bg-blue-500/20 mt-1"
+                              onClick={() => {
+                                setSelectedInequality(ineq)
+                                setActiveTab("secondary")
+                              }}
+                            >
+                              Trade b-tokens
+                            </Button>
+                          </div>
+                        ),
+                    )}
+                    {Object.values(userShares).every((s) => s.yes === 0 && s.no === 0) &&
+                      Object.values(userBTokens).every((b) => b === 0) && (
+                        <div className="text-sm text-zinc-400 text-center py-2">No positions yet.</div>
                       )}
-                      {Object.values(userShares).every((s) => s === 0) && userBTokens === 0 && (
-                        <div className="text-sm text-zinc-400 text-center py-2">
-                          You don't have any positions in this market yet.
-                        </div>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
+                  </div>
+                </CardContent>
+              </Card>
+              {activeSubMarket && selectedInequality && (
                 <Card className="bg-zinc-900 border-zinc-800">
                   <CardHeader className="p-3">
-                    <CardTitle className="text-base">Market Seeders</CardTitle>
+                    <CardTitle className="text-base">
+                      Seeders for <span className="text-primary">{selectedInequality}</span>
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="p-3 pt-0">
                     <div className="space-y-2">
-                      {market.seeders.map((seeder: any, index: number) => (
-                        <div key={index} className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg">
+                      {Array.from(activeSubMarket.seeders.entries()).map(([addr, sInfo], idx) => (
+                        <div key={idx} className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg">
                           <div>
-                            <div className="text-sm font-medium text-white">{seeder.address}</div>
-                            <div className="text-xs text-zinc-400">Seeded {seeder.timestamp}</div>
+                            <div className="text-sm font-medium text-white">
+                              {addr === `initial_seeder_${selectedInequality}` || addr === "You"
+                                ? addr
+                                : `${addr.substring(0, 4)}...${addr.substring(addr.length - 4)}`}
+                            </div>
+                            <div className="text-xs text-zinc-400">
+                              Seeded: {toFixed(sInfo.seedAmountStroops).toFixed(0)} XLM
+                            </div>
                           </div>
                           <div className="text-right">
-                            <div className="text-sm font-medium text-white">{seeder.b} b</div>
+                            <div className="text-sm font-medium text-white">
+                              {toFixed(sInfo.liquidityParamB).toFixed(1)} b
+                            </div>
                             <div className="text-xs text-zinc-400">
-                              ({((Number(seeder.b) / market.b) * 100).toFixed(1)}% of pool)
+                              ({((toFixed(sInfo.liquidityParamB) / currentMarketB) * 100 || 0).toFixed(1)}% pool)
                             </div>
                           </div>
                         </div>
@@ -807,13 +531,13 @@ export default function MarketPage() {
                         <span className="text-xs font-medium text-yellow-500">b-token Economics</span>
                       </div>
                       <p className="text-xs text-zinc-400">
-                        b-tokens represent shares of the market's liquidity pool. Holders earn trading fees proportional
-                        to their share. The combined b parameter for this market is {market.b.toFixed(1)} b.
+                        b-tokens for '{selectedInequality}' represent shares of its specific liquidity pool. Combined b:{" "}
+                        {currentMarketB.toFixed(1)} b.
                       </p>
                     </div>
                   </CardFooter>
                 </Card>
-              </div>
+              )}
             </div>
           </div>
         </div>

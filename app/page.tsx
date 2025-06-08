@@ -20,7 +20,7 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("")
   const [activeTag, setActiveTag] = useState("All")
   const [timeRange, setTimeRange] = useState("all")
-  const [sortBy, setSortBy] = useState("trending")
+  const [sortBy, setSortBy] = useState("volume")
   const [filters, setFilters] = useState<MarketFilters>({
     status: "all",
     liquidity: "all",
@@ -142,15 +142,6 @@ export default function Home() {
           return aDate.getTime() - bDate.getTime()
         })
         break
-      case "trending":
-      default:
-        // Sort by trend (for trending)
-        result = result.sort((a, b) => {
-          const aValue = a.trend === "up" ? 1 : a.trend === "down" ? -1 : 0
-          const bValue = b.trend === "up" ? 1 : b.trend === "down" ? -1 : 0
-          return bValue - aValue
-        })
-        break
     }
 
     setFilteredMarkets(result)
@@ -214,7 +205,7 @@ export default function Home() {
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 h-4.5 w-4.5 -translate-y-1/2 text-zinc-500" />
                 <Input
-                  placeholder="Search markets or create a new one..."
+                  placeholder="Search assets (e.g., BTC, Gold, Oil)..."
                   className="h-12 bg-gradient-to-r from-zinc-900/90 to-zinc-800/70 border-zinc-700/90 pl-11 text-white placeholder:text-zinc-500 w-full focus:border-yellow-500/70 focus:shadow-[0_0_20px_2px_theme(colors.yellow.500/0.25)] focus:ring-0 transition-all duration-300 ease-out rounded-lg text-base"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
@@ -241,26 +232,33 @@ export default function Home() {
                       </div>
                       <div className="mt-2 border-t border-zinc-700/70 pt-2">
                         <h3 className={searchDropdownSectionTitleClass}>Popular Searches</h3>
-                        {["Bitcoin price", "US Election", "World Cup '26", "AI Safety", "Next James Bond"].map(
-                          (term) => (
-                            <div
-                              key={term}
-                              className={`${searchDropdownItemBaseClass} flex items-center group`}
-                              onClick={() => {
-                                setSearchQuery(term)
-                                setShowSearchDropdown(false)
-                              }}
-                            >
-                              <Clock className="h-4 w-4 text-zinc-500 group-hover:text-yellow-500/80 mr-2.5" />{" "}
-                              <span className="text-zinc-300 group-hover:text-zinc-100">{term}</span>
-                            </div>
-                          ),
-                        )}
+                        {[
+                          "BTC Price > $100k",
+                          "ETH/BTC Ratio",
+                          "Gold Price",
+                          "US Interest Rates",
+                          "Oil Price > $100",
+                        ].map((term) => (
+                          <div
+                            key={term}
+                            className={`${searchDropdownItemBaseClass} flex items-center group`}
+                            onClick={() => {
+                              setSearchQuery(term)
+                              setShowSearchDropdown(false)
+                            }}
+                          >
+                            <Clock className="h-4 w-4 text-zinc-500 group-hover:text-yellow-500/80 mr-2.5" />{" "}
+                            <span className="text-zinc-300 group-hover:text-zinc-100">{term}</span>
+                          </div>
+                        ))}
                       </div>
                       <div className="mt-2 border-t border-zinc-700/70 pt-2">
-                        <h3 className={searchDropdownSectionTitleClass}>Trending Markets</h3>
+                        <h3 className={searchDropdownSectionTitleClass}>Highest Volume</h3>
                         {allMarkets
-                          .filter((m) => m.trend === "up" || m.trend === "down")
+                          .sort(
+                            (a, b) =>
+                              Number.parseInt(b.volume.replace(/,/g, "")) - Number.parseInt(a.volume.replace(/,/g, "")),
+                          )
                           .slice(0, 3)
                           .map((market) => (
                             <div

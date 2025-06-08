@@ -1,55 +1,28 @@
 "use client"
 
-import { Zap } from "lucide-react" // Removed ArrowUpRight, ArrowDownRight
+import { Zap } from "lucide-react"
 import { useRouter } from "next/navigation"
-import { allMarkets, type Market } from "@/data/markets"
+import { allMarkets } from "@/data/markets"
+
+function formatNumber(num: number): string {
+  if (num >= 1000000) return (num / 1000000).toFixed(1) + "M"
+  if (num >= 1000) return (num / 1000).toFixed(1) + "K"
+  return num.toString()
+}
 
 export function TrendingMarkets() {
   const router = useRouter()
+  // Redefine "trending" as highest volume markets
   const trending = allMarkets
-    .filter((market) => market.trend === "up" || market.trend === "down") // Still using trend to identify "trending" markets
-    .sort((a, b) => {
-      const trendAIsUp = a.trend === "up"
-      const trendBIsUp = b.trend === "up"
-      if (trendAIsUp && !trendBIsUp) return -1
-      if (!trendAIsUp && trendBIsUp) return 1
-      return Math.abs(Number.parseFloat(b.change || "0")) - Math.abs(Number.parseFloat(a.change || "0"))
-    })
+    .sort((a, b) => Number.parseInt(b.volume.replace(/,/g, "")) - Number.parseInt(a.volume.replace(/,/g, "")))
     .slice(0, 3)
-
-  const getDisplayChance = (market: Market): string => {
-    if (market.options && market.options.length > 0 && market.options[0].price) {
-      const price = Number.parseFloat(market.options[0].price)
-      if (!isNaN(price)) {
-        return (price * 100).toFixed(0) + "%"
-      }
-    }
-    // Fallback if price is not available or market is not binary/primary option based
-    // For categorical markets, this might need a different representation or be N/A
-    if (market.marketType === "categorical" && market.options.length > 0) {
-      // Find the option with the highest price for categorical markets as a proxy
-      let highestPrice = 0
-      let bestOptionName = ""
-      market.options.forEach((opt) => {
-        const price = Number.parseFloat(opt.price)
-        if (!isNaN(price) && price > highestPrice) {
-          highestPrice = price
-          bestOptionName = opt.name
-        }
-      })
-      if (bestOptionName) {
-        return `${(highestPrice * 100).toFixed(0)}% (${bestOptionName.substring(0, 10)}${bestOptionName.length > 10 ? "..." : ""})`
-      }
-    }
-    return "N/A"
-  }
 
   return (
     <div className="bg-gradient-to-bl from-zinc-900/90 via-zinc-950 to-black border border-zinc-800/70 rounded-xl p-4 shadow-lg transition-all duration-300 ease-out hover:border-purple-500/50 hover:shadow-[0_0_25px_0px_theme(colors.purple.600/0.2)] h-full flex flex-col">
       <div className="flex items-center mb-4 shrink-0">
         <Zap className="h-5 w-5 text-purple-400 mr-2" />
         <h2 className="text-lg font-semibold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-500">
-          Trending Markets
+          Highest Volume
         </h2>
       </div>
       <div className="space-y-2.5 flex-grow">
@@ -69,18 +42,15 @@ export function TrendingMarkets() {
                 </p>
               </div>
               <div className="flex items-center ml-2 shrink-0">
-                <span
-                  className="text-sm font-semibold text-zinc-200 group-hover:text-white transition-colors" // Neutral color
-                >
-                  {getDisplayChance(market)}
+                <span className="text-sm font-semibold text-zinc-200 group-hover:text-white transition-colors">
+                  ${formatNumber(Number.parseInt(market.volume.replace(/,/g, "")))}
                 </span>
-                {/* Removed Arrow Icons */}
               </div>
             </div>
           ))
         ) : (
           <div className="flex items-center justify-center h-full">
-            <p className="text-zinc-500 text-sm">No trending markets at the moment.</p>
+            <p className="text-zinc-500 text-sm">No active markets at the moment.</p>
           </div>
         )}
       </div>

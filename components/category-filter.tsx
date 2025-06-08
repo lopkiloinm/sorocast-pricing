@@ -4,18 +4,7 @@ import { useState, useRef, useEffect } from "react"
 import { ChevronLeft, ChevronRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
-const categories = [
-  "All",
-  "Politics",
-  "Sports",
-  "Finance",
-  "Crypto",
-  "Entertainment",
-  "Tech",
-  "Science",
-  "Climate",
-  "Miscellaneous",
-]
+const categories = ["All", "Crypto", "Stocks", "Indices", "Commodities", "Forex", "Bonds", "Real Estate", "Emerging"]
 
 export function CategoryFilter() {
   const [activeCategory, setActiveCategory] = useState("All")
