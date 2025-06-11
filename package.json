@@ -46,6 +46,7 @@
     "date-fns": "4.1.0",
     "embla-carousel-react": "8.5.1",
     "input-otp": "1.4.1",
+    "katex": "^0.16.9",
     "lucide-react": "^0.454.0",
     "next": "14.2.16",
     "next-themes": "^0.4.4",
@@ -54,6 +55,7 @@
     "react-day-picker": "8.10.1",
     "react-dom": "^18",
     "react-hook-form": "^7.54.1",
+    "react-katex": "^2.0.2",
     "react-markdown": "latest",
     "react-resizable-panels": "^2.1.7",
     "recharts": "2.15.0",
@@ -65,6 +67,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@types/d3": "^7.4.3",
     "@types/node": "^22",
     "@types/react": "^18",
     "@types/react-dom": "^18",
